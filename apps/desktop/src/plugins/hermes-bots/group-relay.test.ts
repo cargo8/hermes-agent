@@ -45,6 +45,7 @@ async function loadRoom(options: GatewayOptions = {}, existingGateway?: Scripted
   ])
 
   shared.setPluginCtx(scriptedStorage(gateway.storage))
+
   if (existingGateway) {
     const durable = (gateway.storage.get('group-chats') || {}) as Record<string, GroupChat>
     chat.$groupChats.set(
@@ -331,13 +332,16 @@ describe('isolated adoption acceptance', () => {
     const room = await loadRoom({ turn: ({ profile }) => (profile === 'scout' ? 'retry me' : '(pass)') })
     const request = host.request as (method: string, params: Record<string, unknown>) => Promise<unknown>
     let failReply = true
+
     host.request = async (method: string, params: Record<string, unknown>) => {
       if (method === 'group_relay.reply' && (params.line as { kind: string }).kind === 'reply' && failReply) {
         failReply = false
         throw new Error('connection interrupted')
       }
+
       return request(method, params)
     }
+
     await room.relay.handleGroupRelayEnvelope({ id: 'retry', room_id: 'rm-launch', text: 'go' })
     await drain(() => isRunning(room))
     await room.relay.tickGroupRelayWatchers()
@@ -361,6 +365,7 @@ describe('isolated adoption acceptance', () => {
 
   it('does not deliver an explicitly addressed retired room into its same-name replacement', async () => {
     const room = await loadRoom({ turn: () => '(pass)' })
+
     const accepted = await room.relay.handleGroupRelayEnvelope({
       id: 'retired-room-request',
       room_id: 'rm-retired',
@@ -381,6 +386,7 @@ describe('isolated adoption acceptance', () => {
 
   it('does not silently lose a committed reply after the relay lifecycle restarts', async () => {
     let finishTurn: ((text: string) => void) | undefined
+
     const room = await loadRoom({
       turn: ({ n }) =>
         n === 1
@@ -391,9 +397,11 @@ describe('isolated adoption acceptance', () => {
     })
 
     await room.relay.handleGroupRelayEnvelope({ id: 'restart-request', room_id: 'rm-launch', text: 'go' })
+
     for (let i = 0; i < 400 && !finishTurn; i++) {
       await new Promise(resolve => setImmediate(resolve))
     }
+
     expect(finishTurn).toBeTypeOf('function')
     expect(replyLines(room, 'restart-request')[0]).toMatchObject({ kind: 'accepted' })
 

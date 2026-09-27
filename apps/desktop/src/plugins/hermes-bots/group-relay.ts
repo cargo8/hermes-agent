@@ -150,8 +150,10 @@ async function postLine(envelopeId: string, line: GroupRelayLine, connectionId =
   if (connectionId !== activeConnection()) {
     return false
   }
+
   try {
     await host.request('group_relay.reply', { id: envelopeId, line, owner })
+
     return true
   } catch {
     // Keep the cursor until ACK. The journal deduplicates a retry if only
@@ -192,10 +194,12 @@ async function tickWatchers(now: number) {
     if (watcher.connectionId !== activeConnection()) {
       continue
     }
+
     const resolved = resolveRelayRoom(
       { id: watcher.envelopeId, room_id: watcher.roomId, room_name: watcher.group },
       rooms
     )
+
     const room = resolved?.room
 
     if (!room) {
@@ -207,14 +211,20 @@ async function tickWatchers(now: number) {
 
       continue
     }
+
     watcher.group = resolved!.name
+
     if (!watcher.acceptedAck) {
       watcher.acceptedAck = await postLine(watcher.envelopeId, watcher.accepted, watcher.connectionId)
-      if (!watcher.acceptedAck) continue
+
+      if (!watcher.acceptedAck) {
+        continue
+      }
     }
 
     // Stream newly committed member replies in the relay's thread.
     let failed = false
+
     for (const entry of room.log || []) {
       const key = entryKey(entry)
 
@@ -237,14 +247,20 @@ async function tickWatchers(now: number) {
         },
         watcher.connectionId
       )
+
       if (!ack) {
         failed = true
+
         break
       }
+
       watcher.seen.add(key)
       watcher.replies += 1
     }
-    if (failed) continue
+
+    if (failed) {
+      continue
+    }
 
     // Native room activity/running state is not durable. A fresh renderer
     // can replay committed replies, but cannot honestly claim the old round
@@ -256,6 +272,7 @@ async function tickWatchers(now: number) {
         error:
           'Desktop restarted; committed replies were recovered. The interrupted round was not re-executed. Send a follow-up to continue.'
       })
+
       continue
     }
 
@@ -272,6 +289,7 @@ async function tickWatchers(now: number) {
     }
 
     const activity = latestActivityFor(watcher.group, watcher.thread, watcher.epoch)
+
     const ended =
       activity && (activity.kind === 'settled' || activity.kind === 'capped' || activity.kind === 'cancelled')
 
@@ -293,6 +311,7 @@ let tickChain: Promise<void> = Promise.resolve()
 export function tickGroupRelayWatchers(now = Date.now()) {
   const next = tickChain.then(() => tickWatchers(now))
   tickChain = next.catch(() => undefined)
+
   return next
 }
 
@@ -375,9 +394,11 @@ export async function handleGroupRelayEnvelope(
   }
 
   const room = $groupChats.get()[resolved.name] || {}
+
   const anchor = (room.log || []).find(
     entry => !seen.has(entryKey(entry)) && entry.from.kind === 'user' && entry.thread === thread
   )
+
   const accepted: Watcher['accepted'] = {
     kind: 'accepted',
     thread,
@@ -385,6 +406,7 @@ export async function handleGroupRelayEnvelope(
     anchor_entry_id: anchor ? entryKey(anchor) : undefined,
     epoch: room.epoch || 0
   }
+
   const watcher: Watcher = {
     connectionId,
     roomId: String(room.roomId || ''),
@@ -400,6 +422,7 @@ export async function handleGroupRelayEnvelope(
     thread,
     wasRunning: room.running === true
   }
+
   relay.watchers.set(watcherKey(envelopeId, connectionId), watcher)
   watcher.acceptedAck = await postLine(envelopeId, accepted, connectionId)
   scheduleTick()
@@ -410,10 +433,15 @@ export async function handleGroupRelayEnvelope(
 async function recoverWatcher(recovery: Recovery, connectionId: null | string) {
   const { envelope, accepted } = recovery
   const key = watcherKey(envelope.id, connectionId)
-  if (relay.watchers.has(key)) return
+
+  if (relay.watchers.has(key)) {
+    return
+  }
+
   const resolved = resolveRelayRoom(envelope)
   const anchor = accepted?.anchor_entry_id
   const index = anchor ? (resolved?.room.log || []).findIndex(entry => entryKey(entry) === anchor) : -1
+
   if (!resolved || !accepted?.thread || index < 0 || (recovery.legacy_reply_count || 0) > 0) {
     await postLine(
       envelope.id,
@@ -425,10 +453,16 @@ async function recoverWatcher(recovery: Recovery, connectionId: null | string) {
       },
       connectionId
     )
+
     return
   }
+
   const seen = new Set((resolved.room.log || []).slice(0, index + 1).map(entryKey))
-  for (const id of recovery.reply_entry_ids || []) seen.add(id)
+
+  for (const id of recovery.reply_entry_ids || []) {
+    seen.add(id)
+  }
+
   relay.watchers.set(key, {
     connectionId,
     roomId: String(resolved.room.roomId || ''),
@@ -466,18 +500,26 @@ export async function drainGroupRelayOutbox() {
 
     try {
       const active = [...relay.watchers.values()].filter(w => w.connectionId === connectionId).map(w => w.envelopeId)
+
       const res = await host.request<{ envelopes?: GroupRelayEnvelope[]; recoveries?: Recovery[] }>(
         'group_relay.outbox.drain',
         { owner, active }
       )
+
       envelopes = Array.isArray(res?.envelopes) ? res.envelopes : []
       recoveries = Array.isArray(res?.recoveries) ? res.recoveries : []
     } catch {
       // Older gateway without the method, or transport blip: try next tick.
       envelopes = []
     }
-    if (connectionId !== activeConnection() || relay.disposed) return
-    for (const recovery of recoveries) await recoverWatcher(recovery, connectionId)
+
+    if (connectionId !== activeConnection() || relay.disposed) {
+      return
+    }
+
+    for (const recovery of recoveries) {
+      await recoverWatcher(recovery, connectionId)
+    }
 
     for (const envelope of envelopes) {
       if (relay.disposed) {

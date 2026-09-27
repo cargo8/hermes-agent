@@ -357,7 +357,10 @@ export default {
           await pullGroupChatServerState().catch(() => false)
           scheduleGroupChatServerSync($groupChats.get())
           await primeRoster()
-          if (!groupRelayDisposed) startGroupRelay()
+
+          if (!groupRelayDisposed) {
+            startGroupRelay()
+          }
         })
         .catch(() => undefined)
     } catch {
