@@ -25,9 +25,10 @@ method = _registry.method
 def _(rid, params: dict) -> dict:
     """Claim every pending group-relay envelope on this gateway. Result: ``{envelopes}``."""
     try:
-        from tools.group_relay import claim_pending, gateway_root
+        from tools.group_relay import drain_with_recovery, gateway_root
 
-        return _ok(rid, {"envelopes": claim_pending(gateway_root())})
+        return _ok(rid, drain_with_recovery(gateway_root(), owner=str(params.get("owner") or ""),
+                                           active=params.get("active") or []))
     except Exception as e:
         return _err(rid, 5095, str(e))
 
@@ -42,7 +43,7 @@ def _(rid, params: dict) -> dict:
         if not isinstance(line, dict):
             return _err(rid, 4095, "line must be an object")
         try:
-            append_reply_line(gateway_root(), params.get("id"), line)
+            append_reply_line(gateway_root(), params.get("id"), line, owner=str(params.get("owner") or ""))
         except GroupRelayError as exc:
             return _err(rid, 4096, str(exc))
         return _ok(rid, {"ok": True})

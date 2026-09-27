@@ -123,7 +123,8 @@ export default {
     const stopScreenAutoRaise = startScreenAutoRaise()
     // `hermes group send` into Desktop-coordinated rooms: drain the gateway's
     // group_relay outbox and act on the user's behalf (group-relay.ts).
-    startGroupRelay()
+    // Recovery must not inspect an empty room store before hydration ends.
+    let groupRelayDisposed = false
 
     // Disabling the plugin (or a hot reload) must actually stop the clock —
     // before this, the rAF loop + 1Hz document scan ran until app restart.
@@ -133,6 +134,9 @@ export default {
       ctx.onDispose(stopBotRelay)
       ctx.onDispose(stopScreenAutoRaise)
       ctx.onDispose(stopGroupRelay)
+      ctx.onDispose(() => {
+        groupRelayDisposed = true
+      })
     }
 
     // @-mention autocomplete: typing "@rese…" in ANY composer offers the
@@ -267,8 +271,13 @@ export default {
     }
 
     try {
-      // @ts-expect-error TODO(bot-mode-types): PluginStorage.get requires a fallback argument.
-      Promise.resolve(ctx.storage?.get?.('group-chats'))
+      Promise.resolve()
+        .then(() => {
+          // @ts-expect-error TODO(bot-mode-types): PluginStorage.get requires a fallback argument.
+          return ctx.storage?.get?.('group-chats')
+        })
+        // Still try the gateway projection if local storage cannot hydrate.
+        .catch(() => null)
         .then(async value => {
           if (value && typeof value === 'object' && !Array.isArray(value)) {
             const rooms: Record<string, GroupChat> = {}
@@ -347,6 +356,8 @@ export default {
           await tombstonesHydrated
           await pullGroupChatServerState().catch(() => false)
           scheduleGroupChatServerSync($groupChats.get())
+          await primeRoster()
+          if (!groupRelayDisposed) startGroupRelay()
         })
         .catch(() => undefined)
     } catch {

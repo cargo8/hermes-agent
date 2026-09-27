@@ -613,6 +613,18 @@ gateway, the app writes it into the room on your behalf (it appears as
 thread; pass an existing Desktop thread id (see `hermes group log --json`) to
 continue one. Use `--kind hosted|desktop` when a name exists in both.
 
+An explicit room ID never falls back to a different room with the same name.
+The relay journals accepted requests and committed reply IDs on the gateway.
+Transient reply failures are retried without replaying those entries. After a
+Desktop renderer restart, recovery waits for the old renderer's 60-second lease
+to expire, returns any committed replies still present in the room log, and
+reports `desktop_restarted` (exit `1`). It does **not** automatically repeat the
+prompt or claim that an interrupted round completed. If the original delivery
+boundary cannot be recovered, it reports `delivery_unknown`; inspect the room
+before retrying. Send a follow-up to continue interrupted work. Keep the gateway
+connection that received the request active until completion; replies pause
+while another connection is selected.
+
 Exit codes: `0` settled/bounded, `1` error, `2` usage, `3` timeout (replies
 received so far are already printed), `4` superseded by a room stop. A room
 stop is room-wide — it cancels every pending user turn in every thread,

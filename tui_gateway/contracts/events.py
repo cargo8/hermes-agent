@@ -707,6 +707,7 @@ event("sessions.changed", ChangeSignalPayload, doc="state.db moved; refetch the 
 event("platforms.changed", ChangeSignalPayload, doc="gateway_state.json moved; refetch platform status.")
 event("pairing.changed", ChangeSignalPayload, doc="Pairing state moved; refetch pairing.")
 event("bot_relay.outbox.pending", ChangeSignalPayload, doc="A bot-relay outbox envelope is queued; drain it.")
+event("group_relay.outbox.pending", ChangeSignalPayload, doc="A Desktop group relay envelope is queued; drain it.")
 
 
 __all__ = [

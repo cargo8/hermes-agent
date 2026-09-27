@@ -1624,6 +1624,36 @@ export interface BotRelayReplyParams {
 export interface OkResult {
   ok?: boolean
 }
+export interface GroupRelayDrainParams {
+  owner?: string
+  active?: string[]
+}
+export interface GroupRelayOutboxDrainResult {
+  envelopes: GroupRelayEnvelope[]
+  recoveries?: GroupRelayRecovery[]
+}
+export interface GroupRelayEnvelope {
+  id: string
+  created_at: number
+  from_profile: string
+  label: string
+  room_id: string
+  room_name: string
+  text: string
+  thread: string | null
+  event_key?: string | null
+}
+export interface GroupRelayRecovery {
+  envelope: GroupRelayEnvelope
+  accepted: Record<string, unknown> | null
+  reply_entry_ids: string[]
+  legacy_reply_count?: number
+}
+export interface GroupRelayReplyParams {
+  id: string
+  owner?: string
+  line: Record<string, unknown>
+}
 export interface BrowserControllerRegisterParams {
   session_id: string
   controller_id: string
@@ -4754,6 +4784,10 @@ export interface RpcMethods {
   'free_tier.status': { params: ProfileParams; result: FreeTierStatusResult }
   /** What THIS build enforces (a client withholds a feature unless advertised). */
   'gateway.capabilities': { params: PingParams; result: GatewayCapabilitiesResult }
+  /** Claim pending messages addressed to Desktop-coordinated group chats. */
+  'group_relay.outbox.drain': { params: GroupRelayDrainParams; result: GroupRelayOutboxDrainResult }
+  /** Append a progress line for a Desktop group relay request. */
+  'group_relay.reply': { params: GroupRelayReplyParams; result: OkResult }
   /** Resolve one exact pending approval raised by a local or peer room member. */
   'groups.approve': { params: GroupsApproveParams; result: GroupsApproveResult }
   /** Describe the hosted-room protocol implemented by this gateway. */
@@ -5169,6 +5203,8 @@ export const RPC_METHODS = [
   'free_tier.provision',
   'free_tier.status',
   'gateway.capabilities',
+  'group_relay.outbox.drain',
+  'group_relay.reply',
   'groups.approve',
   'groups.capabilities',
   'groups.create',
@@ -5430,6 +5466,8 @@ export interface BackendGatewayEventMap {
   error: ErrorPayload
   /** First frame of a connection: the resolved skin, the change-event capability and the replay epoch. */
   'gateway.ready': GatewayReadyPayload
+  /** A Desktop group relay envelope is queued; drain it. */
+  'group_relay.outbox.pending': ChangeSignalPayload
   /** Apply a named desktop layout preset. */
   'layout.apply': LayoutApplyPayload
   /** The turn ended: final text, usage and outcome. */
@@ -5562,6 +5600,7 @@ export const GATEWAY_EVENT_TYPES = [
   'display.status',
   'error',
   'gateway.ready',
+  'group_relay.outbox.pending',
   'layout.apply',
   'message.complete',
   'message.delta',
