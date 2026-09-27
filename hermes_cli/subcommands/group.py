@@ -615,6 +615,8 @@ def _cmd_send(args) -> int:
     else:
         count = len(summary.get("replies") or [])
         line = f"[group {ref.name}: {summary.get('status')} ({summary.get('reason')}), {count} replies]"
+        if summary.get("error"):
+            line += f" {summary['error']}"
         print(line, file=sys.stderr if rc else sys.stdout, flush=True)
     return rc
 

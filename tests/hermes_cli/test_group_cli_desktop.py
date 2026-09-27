@@ -295,12 +295,13 @@ def test_desktop_thread_binds_on_accept_and_continues_per_session(home, capsys, 
 
 
 @pytest.mark.parametrize("recovery_reason", [None, "desktop_restarted", "delivery_unknown"])
-def test_desktop_cli_wait_binds_thread_end_to_end(home, capsys, monkeypatch, recovery_reason):
+@pytest.mark.parametrize("json_output", [False, True])
+def test_desktop_cli_wait_binds_thread_end_to_end(home, capsys, monkeypatch, recovery_reason, json_output):
     monkeypatch.setenv("HERMES_SESSION_ID", "sess-E2E")
     result = {}
 
     def cli():
-        result["rc"] = _run(["send", "Launchpad", "first", "--wait", "--poll", "0.01", "--timeout", "5", "--json"])
+        result["rc"] = _run(["send", "Launchpad", "first", "--wait", "--poll", "0.01", "--timeout", "5"] + (["--json"] if json_output else []))
 
     w = threading.Thread(target=cli)
     w.start()
@@ -322,12 +323,18 @@ def test_desktop_cli_wait_binds_thread_end_to_end(home, capsys, monkeypatch, rec
         gr.append_reply_line(home, env["id"], {"kind": "done", "status": "settled", "replies": 1})
     w.join(5)
     assert result["rc"] == (1 if recovery_reason else 0)
-    summary = _out_json(capsys)
-    assert summary["thread"] == "tmtm-e2e"
-    assert summary["replies"][0]["text"] == "Committed partial reply"
-    if recovery_reason:
-        assert summary["status"] == "error"
-        assert summary["reason"] == recovery_reason
+    output = capsys.readouterr()
+    if json_output:
+        summary = json.loads(output.out)
+        assert summary["thread"] == "tmtm-e2e"
+        assert summary["replies"][0]["text"] == "Committed partial reply"
+        if recovery_reason:
+            assert summary["status"] == "error"
+            assert summary["reason"] == recovery_reason
+    else:
+        assert "Committed partial reply" in output.out
+        if recovery_reason:
+            assert "Round interrupted" in output.err
     assert g.bound_thread(g.resolve_room("Launchpad", kind="desktop"), "sess-E2E") == "tmtm-e2e"
 
 
