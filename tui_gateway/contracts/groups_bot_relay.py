@@ -571,6 +571,49 @@ method("bot_relay.reply", params=BotRelayReplyParams, result=OkResult,
        doc="Write a relayed reply and/or typed error for an envelope so the sender-side waiter resolves.")
 
 
+# Desktop-coordinated rooms use a different envelope from cross-connection DMs.
+class GroupRelayEnvelope(Result):
+    id: str
+    created_at: int
+    from_profile: str
+    label: str
+    room_id: str
+    room_name: str
+    text: str
+    thread: str | None
+    event_key: str | None = None
+
+
+class GroupRelayRecovery(Result):
+    envelope: GroupRelayEnvelope
+    accepted: dict[str, JsonValue] | None
+    reply_entry_ids: list[str]
+    legacy_reply_count: int = 0
+
+
+class GroupRelayDrainParams(Params):
+    owner: str = ""
+    active: list[str] = []
+
+
+class GroupRelayOutboxDrainResult(Result):
+    envelopes: list[GroupRelayEnvelope]
+    recoveries: list[GroupRelayRecovery] = []
+
+
+class GroupRelayReplyParams(Params):
+    id: str
+    owner: str = ""
+    # The store validates the tagged line; retain its documented error codes.
+    line: dict[str, JsonValue]
+
+
+method("group_relay.outbox.drain", params=GroupRelayDrainParams, result=GroupRelayOutboxDrainResult,
+       doc="Claim pending messages addressed to Desktop-coordinated group chats.")
+method("group_relay.reply", params=GroupRelayReplyParams, result=OkResult,
+       doc="Append a progress line for a Desktop group relay request.")
+
+
 # ── browser controller ────────────────────────────────────────────────────────────────────────
 
 

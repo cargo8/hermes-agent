@@ -26,12 +26,14 @@ errors; ids are 32 hex chars so paths cannot be steered.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import logging
 import os
 import re
 import tempfile
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -50,6 +52,47 @@ STALE_AFTER_SECONDS = 6 * 3600
 # Unclaimed envelopes older than this are expired at drain time with an
 # ``error`` line so a waiting CLI resolves instead of hanging until timeout.
 DEFAULT_ENVELOPE_TTL_SECONDS = 15 * 60
+# A second renderer cannot take over a live renderer's watchers. A crashed
+# renderer stops renewing this lease; recovery never re-executes its prompt.
+CLAIM_LEASE_SECONDS = 60
+_JOURNAL_LOCK = threading.RLock()
+_JOURNAL_LOCAL = threading.local()
+
+
+@contextlib.contextmanager
+def _journal_lock(root: Path | str):
+    """Serialize journal read/modify/write across threads and processes."""
+    base = _ensure_dirs(root)
+    with _JOURNAL_LOCK:
+        key = str(base.resolve())
+        held = getattr(_JOURNAL_LOCAL, "held", set())
+        if key in held:
+            yield
+            return
+        fd = os.open(base / ".journal.lock", os.O_RDWR | os.O_CREAT, 0o600)
+        locked = False
+        try:
+            if os.name == "nt":
+                import msvcrt
+                if os.fstat(fd).st_size == 0:
+                    os.write(fd, b"\0")
+                os.lseek(fd, 0, os.SEEK_SET)
+                msvcrt.locking(fd, msvcrt.LK_LOCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(fd, fcntl.LOCK_EX)
+            locked = True
+            _JOURNAL_LOCAL.held = held | {key}
+            yield
+        finally:
+            _JOURNAL_LOCAL.held = held
+            if locked:
+                if os.name == "nt":
+                    os.lseek(fd, 0, os.SEEK_SET)
+                    msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+                else:
+                    fcntl.flock(fd, fcntl.LOCK_UN)
+            os.close(fd)
 
 MAX_TEXT_CHARS = 64 * 1024
 MAX_LABEL_CHARS = 200
@@ -245,9 +288,14 @@ def pending_count(root: Path | str, *, older_than_seconds: float = 0.0) -> int:
     return count
 
 
-def claim_pending(root: Path | str, *, ttl_seconds: int | None = None) -> list[dict[str, Any]]:
+def claim_pending(root: Path | str, *, ttl_seconds: int | None = None, owner: str = "") -> list[dict[str, Any]]:
     """Drain the outbox (atomic rename → claimed/). Expired envelopes get an
     ``error`` reply line and are dropped rather than delivered."""
+    with _journal_lock(root):
+        return _claim_pending(root, ttl_seconds=ttl_seconds, owner=owner)
+
+
+def _claim_pending(root: Path | str, *, ttl_seconds: int | None, owner: str) -> list[dict[str, Any]]:
     base = _ensure_dirs(root)
     _sweep_stale(base)
     ttl = DEFAULT_ENVELOPE_TTL_SECONDS if ttl_seconds is None else int(ttl_seconds)
@@ -286,13 +334,58 @@ def claim_pending(root: Path | str, *, ttl_seconds: int | None = None) -> list[d
         claimed = base / CLAIMED_DIR / path.name
         try:
             os.replace(path, claimed)
+            os.utime(claimed, None)  # lease age starts at claim, not enqueue
             if envelope is None:
                 envelope = json.loads(claimed.read_text(encoding="utf-8"))
             if isinstance(envelope, dict):
+                if owner:
+                    _atomic_write_json(base / CLAIMED_DIR, path.name,
+                                       {**envelope, "_relay_owner": owner, "_lease_at": now}, prefix=".claim-")
                 out.append(envelope)
         except (OSError, ValueError):
             continue
     return out
+
+
+def drain_with_recovery(root: Path | str, *, owner: str = "", active: Iterable[str] = ()) -> dict[str, Any]:
+    """Lease claimed journals to one renderer; recover tracking, never delivery.
+
+    Legacy clients still get only fresh envelopes. Upgraded renderers renew
+    their active claims, and can take over a stopped/crashed renderer after
+    its lease expires. Reply entry IDs form the durable ACK cursor.
+    """
+    if not owner:
+        return {"envelopes": claim_pending(root), "recoveries": []}
+    now = time.time()
+    active_ids = set(active)
+    recoveries = []
+    with _journal_lock(root):
+        base = relay_root(root)
+        for path in sorted((base / CLAIMED_DIR).glob("*.json")):
+            try:
+                env = json.loads(path.read_text(encoding="utf-8"))
+                envelope_id = _validate_id(env.get("id"))
+                lines, _ = read_reply_lines(root, envelope_id)
+                if any(line.get("kind") in ("done", "error") for line in lines):
+                    continue
+                previous_owner = env.get("_relay_owner")
+                lease_at = float(env.get("_lease_at", path.stat().st_mtime))
+                if previous_owner != owner and now - lease_at < CLAIM_LEASE_SECONDS:
+                    continue
+                env.update(_relay_owner=owner, _lease_at=now)
+                _atomic_write_json(base / CLAIMED_DIR, path.name, env, prefix=".claim-")
+                if envelope_id not in active_ids:
+                    recoveries.append({
+                        "envelope": {k: v for k, v in env.items() if not k.startswith("_")},
+                        "accepted": next((line for line in lines if line.get("kind") == "accepted"), None),
+                        "reply_entry_ids": [str(line["entry_id"]) for line in lines
+                                            if line.get("kind") == "reply" and line.get("entry_id")],
+                        "legacy_reply_count": sum(line.get("kind") == "reply" and not line.get("entry_id")
+                                                  for line in lines),
+                    })
+            except (OSError, ValueError, TypeError):
+                logger.debug("Ignoring unreadable relay claim %s", path.name)
+    return {"envelopes": claim_pending(root, owner=owner), "recoveries": recoveries}
 
 
 # ── reply lines (Desktop → CLI) ──────────────────────────────────────────────
@@ -302,7 +395,7 @@ def _reply_path(root: Path | str, envelope_id: Any) -> Path:
     return _ensure_dirs(root) / REPLIES_DIR / f"{_validate_id(envelope_id)}.jsonl"
 
 
-def append_reply_line(root: Path | str, envelope_id: Any, line: dict[str, Any]) -> Path:
+def append_reply_line(root: Path | str, envelope_id: Any, line: dict[str, Any], *, owner: str = "") -> Path:
     """Append one progress line. ``line['kind']`` ∈ accepted|reply|done|error."""
     if not isinstance(line, dict):
         raise GroupRelayError("reply line must be an object")
@@ -316,12 +409,43 @@ def append_reply_line(root: Path | str, envelope_id: Any, line: dict[str, Any]) 
     path = _reply_path(root, envelope_id)
     record = {"id": _validate_id(envelope_id), "at": int(time.time()), **line}
     encoded = json.dumps(record, ensure_ascii=False) + "\n"
-    # O_APPEND writes below PIPE_BUF are atomic on POSIX; lines are small.
-    fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
-    try:
-        os.write(fd, encoded.encode("utf-8"))
-    finally:
-        os.close(fd)
+    with _journal_lock(root):
+        if owner:
+            claimed = relay_root(root) / CLAIMED_DIR / f"{_validate_id(envelope_id)}.json"
+            try:
+                claim = json.loads(claimed.read_text(encoding="utf-8"))
+            except (OSError, ValueError) as exc:
+                raise GroupRelayError("relay claim is unavailable") from exc
+            if claim.get("_relay_owner") != owner:
+                raise GroupRelayError("relay claim belongs to another renderer")
+        existing, complete_offset = read_reply_lines(root, envelope_id)
+        # A lost RPC ACK may be retried. Never emit a second terminal line or
+        # accepted record, nor replay the same committed room entry twice.
+        if any(row.get("kind") in ("done", "error") for row in existing):
+            return path
+        if kind == "accepted" and any(row.get("kind") == "accepted" for row in existing):
+            return path
+        if kind == "reply" and line.get("entry_id") and any(
+            row.get("kind") == "reply" and row.get("entry_id") == line["entry_id"] for row in existing
+        ):
+            return path
+        # Regular files do not have PIPE_BUF atomicity. Lock the full write,
+        # including partial-write retries, and persist it before acknowledging.
+        fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        try:
+            # A crash may leave a partial final record. Do not concatenate a
+            # retry onto it and silently lose the first acknowledged reply.
+            if os.fstat(fd).st_size > complete_offset:
+                os.ftruncate(fd, complete_offset)
+            data = encoded.encode("utf-8")
+            while data:
+                written = os.write(fd, data)
+                if written <= 0:
+                    raise OSError("short relay journal write")
+                data = data[written:]
+            os.fsync(fd)
+        finally:
+            os.close(fd)
     return path
 
 

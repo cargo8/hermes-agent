@@ -57,6 +57,24 @@ def test_change_watch_registered():
     assert "group_relay.outbox.drain" in srv._methods and "group_relay.reply" in srv._methods
 
 
+def test_recovery_roundtrip_through_real_dispatcher(home, monkeypatch):
+    now = [2000.0]
+    monkeypatch.setattr(gr.time, "time", lambda: now[0])
+    env = gr.enqueue(home, room_id="room", room_name="Council", text="once", from_profile="default", label="test")
+
+    def call(method, params):
+        return srv.handle_request({"jsonrpc": "2.0", "id": 99, "method": method, "params": params})
+
+    claimed = _result(call("group_relay.outbox.drain", {"owner": "first", "active": []}))
+    assert claimed["envelopes"][0]["id"] == env["id"]
+    assert _result(call("group_relay.reply", {"owner": "first", "id": env["id"],
+        "line": {"kind": "accepted", "thread": "t", "anchor_entry_id": "a", "epoch": 1}}))["ok"]
+    now[0] += gr.CLAIM_LEASE_SECONDS + 1
+    recovered = _result(call("group_relay.outbox.drain", {"owner": "second", "active": []}))
+    assert recovered["envelopes"] == []
+    assert recovered["recoveries"][0]["accepted"]["anchor_entry_id"] == "a"
+
+
 def test_outbox_signature_is_monotone(home, monkeypatch):
     monkeypatch.setattr(srv, "_watcher_home", lambda: home)
     monkeypatch.setattr(srv, "_group_relay_outbox_seen", 0)

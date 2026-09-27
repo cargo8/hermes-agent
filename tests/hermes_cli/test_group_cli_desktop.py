@@ -294,12 +294,14 @@ def test_desktop_thread_binds_on_accept_and_continues_per_session(home, capsys, 
     assert g.bound_thread(ref, "sess-A") is None
 
 
-def test_desktop_cli_wait_binds_thread_end_to_end(home, capsys, monkeypatch):
+@pytest.mark.parametrize("recovery_reason", [None, "desktop_restarted", "delivery_unknown"])
+@pytest.mark.parametrize("json_output", [False, True])
+def test_desktop_cli_wait_binds_thread_end_to_end(home, capsys, monkeypatch, recovery_reason, json_output):
     monkeypatch.setenv("HERMES_SESSION_ID", "sess-E2E")
     result = {}
 
     def cli():
-        result["rc"] = _run(["send", "Launchpad", "first", "--wait", "--poll", "0.01", "--timeout", "5"])
+        result["rc"] = _run(["send", "Launchpad", "first", "--wait", "--poll", "0.01", "--timeout", "5"] + (["--json"] if json_output else []))
 
     w = threading.Thread(target=cli)
     w.start()
@@ -314,10 +316,25 @@ def test_desktop_cli_wait_binds_thread_end_to_end(home, capsys, monkeypatch):
     assert env is not None and env["thread"] is None
     gr.claim_pending(home)
     gr.append_reply_line(home, env["id"], {"kind": "accepted", "thread": "tmtm-e2e", "group": "Launchpad"})
-    gr.append_reply_line(home, env["id"], {"kind": "done", "status": "settled", "replies": 0})
+    gr.append_reply_line(home, env["id"], {"kind": "reply", "entry_id": "reply-e2e", "text": "Committed partial reply", "author": "Ada"})
+    if recovery_reason:
+        gr.append_reply_line(home, env["id"], {"kind": "error", "reason": recovery_reason, "error": "Round interrupted"})
+    else:
+        gr.append_reply_line(home, env["id"], {"kind": "done", "status": "settled", "replies": 1})
     w.join(5)
-    assert result["rc"] == 0
-    capsys.readouterr()
+    assert result["rc"] == (1 if recovery_reason else 0)
+    output = capsys.readouterr()
+    if json_output:
+        summary = json.loads(output.out)
+        assert summary["thread"] == "tmtm-e2e"
+        assert summary["replies"][0]["text"] == "Committed partial reply"
+        if recovery_reason:
+            assert summary["status"] == "error"
+            assert summary["reason"] == recovery_reason
+    else:
+        assert "Committed partial reply" in output.out
+        if recovery_reason:
+            assert "Round interrupted" in output.err
     assert g.bound_thread(g.resolve_room("Launchpad", kind="desktop"), "sess-E2E") == "tmtm-e2e"
 
 

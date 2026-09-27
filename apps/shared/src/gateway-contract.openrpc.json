@@ -1051,6 +1051,42 @@
       }
     },
     {
+      "name": "group_relay.outbox.drain",
+      "summary": "Claim pending messages addressed to Desktop-coordinated group chats.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/GroupRelayDrainParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/GroupRelayOutboxDrainResult"
+        }
+      }
+    },
+    {
+      "name": "group_relay.reply",
+      "summary": "Append a progress line for a Desktop group relay request.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/GroupRelayReplyParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/OkResult"
+        }
+      }
+    },
+    {
       "name": "groups.approve",
       "summary": "Resolve one exact pending approval raised by a local or peer room member.",
       "params": [
@@ -13585,6 +13621,183 @@
           "gates"
         ],
         "title": "GoalSnapshot",
+        "type": "object"
+      },
+      "GroupRelayDrainParams": {
+        "additionalProperties": false,
+        "properties": {
+          "owner": {
+            "default": "",
+            "title": "Owner",
+            "type": "string"
+          },
+          "active": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Active",
+            "type": "array"
+          }
+        },
+        "title": "GroupRelayDrainParams",
+        "type": "object"
+      },
+      "GroupRelayEnvelope": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "created_at": {
+            "title": "Created At",
+            "type": "integer"
+          },
+          "from_profile": {
+            "title": "From Profile",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "room_id": {
+            "title": "Room Id",
+            "type": "string"
+          },
+          "room_name": {
+            "title": "Room Name",
+            "type": "string"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          },
+          "thread": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Thread"
+          },
+          "event_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Event Key"
+          }
+        },
+        "required": [
+          "id",
+          "created_at",
+          "from_profile",
+          "label",
+          "room_id",
+          "room_name",
+          "text",
+          "thread"
+        ],
+        "title": "GroupRelayEnvelope",
+        "type": "object"
+      },
+      "GroupRelayOutboxDrainResult": {
+        "additionalProperties": false,
+        "properties": {
+          "envelopes": {
+            "items": {
+              "$ref": "#/components/schemas/GroupRelayEnvelope"
+            },
+            "title": "Envelopes",
+            "type": "array"
+          },
+          "recoveries": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/GroupRelayRecovery"
+            },
+            "title": "Recoveries",
+            "type": "array"
+          }
+        },
+        "required": [
+          "envelopes"
+        ],
+        "title": "GroupRelayOutboxDrainResult",
+        "type": "object"
+      },
+      "GroupRelayRecovery": {
+        "additionalProperties": false,
+        "properties": {
+          "envelope": {
+            "$ref": "#/components/schemas/GroupRelayEnvelope"
+          },
+          "accepted": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Accepted"
+          },
+          "reply_entry_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Reply Entry Ids",
+            "type": "array"
+          },
+          "legacy_reply_count": {
+            "default": 0,
+            "title": "Legacy Reply Count",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "envelope",
+          "accepted",
+          "reply_entry_ids"
+        ],
+        "title": "GroupRelayRecovery",
+        "type": "object"
+      },
+      "GroupRelayReplyParams": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "owner": {
+            "default": "",
+            "title": "Owner",
+            "type": "string"
+          },
+          "line": {
+            "additionalProperties": true,
+            "title": "Line",
+            "type": "object"
+          }
+        },
+        "required": [
+          "id",
+          "line"
+        ],
+        "title": "GroupRelayReplyParams",
         "type": "object"
       },
       "GroupsApproveParams": {
@@ -37620,6 +37833,18 @@
           "name": "payload",
           "schema": {
             "$ref": "#/components/schemas/GatewayReadyPayload"
+          }
+        }
+      ]
+    },
+    {
+      "name": "group_relay.outbox.pending",
+      "summary": "A Desktop group relay envelope is queued; drain it.",
+      "params": [
+        {
+          "name": "payload",
+          "schema": {
+            "$ref": "#/components/schemas/ChangeSignalPayload"
           }
         }
       ]

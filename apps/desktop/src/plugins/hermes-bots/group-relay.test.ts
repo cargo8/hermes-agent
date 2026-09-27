@@ -4,7 +4,7 @@ import type * as groupChat from './group-chat'
 import type * as groupRelay from './group-relay'
 import { createGroupGateway, drain, runTimersInline, scriptedStorage } from './group-test-utils'
 import type { GatewayOptions, ScriptedGateway } from './group-test-utils'
-import type { RosterRow } from './types'
+import type { GroupChat, RosterRow } from './types'
 
 // The Desktop half of `hermes group send` for Desktop-coordinated rooms: a
 // gateway envelope becomes a sendToGroupChat ON THE USER'S BEHALF, and the
@@ -24,14 +24,11 @@ interface Room {
   relay: typeof groupRelay
 }
 
-const MEMBERS: RosterRow[] = [
-  { name: 'scout', title: '' } as RosterRow,
-  { name: 'helper', title: '' } as RosterRow
-]
+const MEMBERS: RosterRow[] = [{ name: 'scout', title: '' } as RosterRow, { name: 'helper', title: '' } as RosterRow]
 
-async function loadRoom(options: GatewayOptions = {}): Promise<Room> {
+async function loadRoom(options: GatewayOptions = {}, existingGateway?: ScriptedGateway): Promise<Room> {
   vi.resetModules()
-  const gateway = createGroupGateway(options)
+  const gateway = existingGateway || createGroupGateway(options)
 
   for (const key of Object.keys(host)) {
     delete host[key]
@@ -48,6 +45,15 @@ async function loadRoom(options: GatewayOptions = {}): Promise<Room> {
   ])
 
   shared.setPluginCtx(scriptedStorage(gateway.storage))
+
+  if (existingGateway) {
+    const durable = (gateway.storage.get('group-chats') || {}) as Record<string, GroupChat>
+    chat.$groupChats.set(
+      Object.fromEntries(
+        Object.entries(durable).map(([name, stored]) => [name, { ...stored, epoch: 0, running: false }])
+      )
+    )
+  }
 
   // Seat two local bots in "Launchpad": roster rows whose meta lists the
   // group, exactly what groupChatMemberBots reads.
@@ -79,18 +85,21 @@ beforeEach(() => {
 })
 
 describe('resolveRelayRoom', () => {
-  it('prefers the durable roomId, falls back to the exact display name', async () => {
+  it('uses the durable roomId without retargeting, and accepts legacy name-only envelopes', async () => {
     const room = await loadRoom()
     const rooms = room.chat.$groupChats.get()
 
-    expect(room.relay.resolveRelayRoom({ id: 'e', room_id: 'rm-launch', room_name: 'Wrong' }, rooms)?.name).toBe('Launchpad')
-    expect(room.relay.resolveRelayRoom({ id: 'e', room_id: 'nope', room_name: 'Launchpad' }, rooms)?.name).toBe('Launchpad')
+    expect(room.relay.resolveRelayRoom({ id: 'e', room_id: 'rm-launch', room_name: 'Wrong' }, rooms)?.name).toBe(
+      'Launchpad'
+    )
+    expect(room.relay.resolveRelayRoom({ id: 'e', room_id: 'nope', room_name: 'Launchpad' }, rooms)).toBeNull()
+    expect(room.relay.resolveRelayRoom({ id: 'e', room_name: 'Launchpad' }, rooms)?.name).toBe('Launchpad')
     expect(room.relay.resolveRelayRoom({ id: 'e', room_id: 'nope', room_name: 'launchpad' }, rooms)).toBeNull()
   })
 })
 
 describe('handleGroupRelayEnvelope', () => {
-  it('sends on the user\'s behalf with via provenance, streams replies in the new thread, then done', async () => {
+  it("sends on the user's behalf with via provenance, streams replies in the new thread, then done", async () => {
     const room = await loadRoom({
       turn: ({ profile }) => (profile === 'scout' ? 'scout says hi' : '(pass)')
     })
@@ -145,11 +154,21 @@ describe('handleGroupRelayEnvelope', () => {
 
     room.chat.appendGroupChatEntry('Launchpad', { kind: 'user', name: 'You' }, 'earlier', 'tmtm-known')
 
-    await room.relay.handleGroupRelayEnvelope({ id: 'e3', room_id: 'rm-launch', text: 'follow-up', thread: 'tmtm-known' })
+    await room.relay.handleGroupRelayEnvelope({
+      id: 'e3',
+      room_id: 'rm-launch',
+      text: 'follow-up',
+      thread: 'tmtm-known'
+    })
     await drain(() => isRunning(room))
     expect(replyLines(room, 'e3')[0].thread).toBe('tmtm-known')
 
-    await room.relay.handleGroupRelayEnvelope({ id: 'e4', room_id: 'rm-launch', text: 'new topic', thread: 'discord-session-42' })
+    await room.relay.handleGroupRelayEnvelope({
+      id: 'e4',
+      room_id: 'rm-launch',
+      text: 'new topic',
+      thread: 'discord-session-42'
+    })
     await drain(() => isRunning(room))
     const minted = String(replyLines(room, 'e4')[0].thread)
     expect(minted).not.toBe('discord-session-42')
@@ -188,7 +207,9 @@ describe('handleGroupRelayEnvelope', () => {
   it('reports room_not_found and no_members without touching any room', async () => {
     const room = await loadRoom()
 
-    expect(await room.relay.handleGroupRelayEnvelope({ id: 'e5', room_id: 'missing', room_name: 'Nope', text: 'x' })).toBe(false)
+    expect(
+      await room.relay.handleGroupRelayEnvelope({ id: 'e5', room_id: 'missing', room_name: 'Nope', text: 'x' })
+    ).toBe(false)
     expect(replyLines(room, 'e5')[0]).toMatchObject({ kind: 'error', reason: 'room_not_found' })
 
     room.chat.updateGroupChat('Empty', current => current)
@@ -197,7 +218,7 @@ describe('handleGroupRelayEnvelope', () => {
     expect(room.gateway.calls).toEqual([])
   })
 
-  it('reports cancelled when a newer send supersedes the relay\'s round', async () => {
+  it("reports cancelled when a newer send supersedes the relay's round", async () => {
     const room = await loadRoom({ turn: () => '(pass)' })
 
     await room.relay.handleGroupRelayEnvelope({ id: 'e7', room_id: 'rm-launch', text: 'first' })
@@ -268,5 +289,136 @@ describe('drainGroupRelayOutbox', () => {
     }
 
     await expect(room.relay.drainGroupRelayOutbox()).resolves.toBeUndefined()
+  })
+})
+
+describe('isolated adoption acceptance', () => {
+  it.each([0, 1])('recovers a fresh module without replaying work or legacy replies (legacy=%i)', async legacyCount => {
+    let room = await loadRoom({ turn: ({ profile }) => (profile === 'scout' ? 'durable reply' : '(pass)') })
+    room.chat.appendGroupChatEntry('Launchpad', { kind: 'member', name: 'helper' }, 'old reply', 'old-thread')
+    const envelope = { id: 'reload', room_id: 'rm-launch', text: 'do this once' }
+    await room.relay.handleGroupRelayEnvelope(envelope)
+    await drain(() => isRunning(room))
+    const accepted = replyLines(room, 'reload').find(line => line.kind === 'accepted')!
+    expect(accepted.anchor_entry_id).toBeTruthy()
+    const before = room.gateway.calls.length
+    room.relay.stopGroupRelay()
+    // This is a real module reset + durable storage hydrate, not stop/start
+    // over the same atoms. The gateway journal fixture is independently
+    // exercised by Python filesystem/RPC tests.
+    room = await loadRoom({}, room.gateway)
+    expect(room.chat.$groupChats.get().Launchpad.epoch).toBe(0)
+    const request = host.request as (method: string, params: Record<string, unknown>) => Promise<unknown>
+    host.request = async (method: string, params: Record<string, unknown>) =>
+      method === 'group_relay.outbox.drain'
+        ? { envelopes: [], recoveries: [{ envelope, accepted, reply_entry_ids: [], legacy_reply_count: legacyCount }] }
+        : request(method, params)
+    room.relay.startGroupRelay()
+    await room.relay.drainGroupRelayOutbox()
+    room.relay.stopGroupRelay()
+    expect(room.gateway.calls.length).toBe(before)
+    expect(room.chat.$groupChats.get().Launchpad.log.filter(entry => entry.text === envelope.text)).toHaveLength(1)
+    expect(replyLines(room, 'reload').filter(line => line.kind === 'reply')).toEqual(
+      legacyCount ? [] : [expect.objectContaining({ text: 'durable reply', entry_id: expect.any(String) })]
+    )
+    expect(replyLines(room, 'reload').at(-1)).toMatchObject({
+      kind: 'error',
+      reason: legacyCount ? 'delivery_unknown' : 'desktop_restarted'
+    })
+    expect(room.relay.groupRelayWatcherIds()).toEqual([])
+  })
+
+  it('does not advance the cursor or send done when a reply RPC fails', async () => {
+    const room = await loadRoom({ turn: ({ profile }) => (profile === 'scout' ? 'retry me' : '(pass)') })
+    const request = host.request as (method: string, params: Record<string, unknown>) => Promise<unknown>
+    let failReply = true
+
+    host.request = async (method: string, params: Record<string, unknown>) => {
+      if (method === 'group_relay.reply' && (params.line as { kind: string }).kind === 'reply' && failReply) {
+        failReply = false
+        throw new Error('connection interrupted')
+      }
+
+      return request(method, params)
+    }
+
+    await room.relay.handleGroupRelayEnvelope({ id: 'retry', room_id: 'rm-launch', text: 'go' })
+    await drain(() => isRunning(room))
+    await room.relay.tickGroupRelayWatchers()
+    expect(replyLines(room, 'retry').map(line => line.kind)).toEqual(['accepted'])
+    expect(room.relay.groupRelayWatcherIds()).toEqual(['retry'])
+    await Promise.all([room.relay.tickGroupRelayWatchers(), room.relay.tickGroupRelayWatchers()])
+    expect(replyLines(room, 'retry').map(line => line.kind)).toEqual(['accepted', 'reply', 'done'])
+  })
+
+  it('holds replies while another gateway is active, then resumes on the original gateway', async () => {
+    const room = await loadRoom({ turn: ({ profile }) => (profile === 'scout' ? 'private reply' : '(pass)') })
+    await room.relay.handleGroupRelayEnvelope({ id: 'origin', room_id: 'rm-launch', text: 'go' })
+    await drain(() => isRunning(room))
+    host.activeConnectionId = () => 'another-gateway'
+    await room.relay.tickGroupRelayWatchers()
+    expect(replyLines(room, 'origin').map(line => line.kind)).toEqual(['accepted'])
+    host.activeConnectionId = () => 'local'
+    await room.relay.tickGroupRelayWatchers()
+    expect(replyLines(room, 'origin').map(line => line.kind)).toEqual(['accepted', 'reply', 'done'])
+  })
+
+  it('does not deliver an explicitly addressed retired room into its same-name replacement', async () => {
+    const room = await loadRoom({ turn: () => '(pass)' })
+
+    const accepted = await room.relay.handleGroupRelayEnvelope({
+      id: 'retired-room-request',
+      room_id: 'rm-retired',
+      room_name: 'Launchpad',
+      text: 'private request for the original room'
+    })
+
+    await drain(() => isRunning(room))
+    await room.relay.tickGroupRelayWatchers()
+    room.relay.stopGroupRelay()
+
+    expect(accepted).toBe(false)
+    expect(room.chat.$groupChats.get().Launchpad.log).toEqual([])
+    expect(replyLines(room, 'retired-room-request')).toEqual([
+      expect.objectContaining({ kind: 'error', reason: 'room_not_found' })
+    ])
+  })
+
+  it('does not silently lose a committed reply after the relay lifecycle restarts', async () => {
+    let finishTurn: ((text: string) => void) | undefined
+
+    const room = await loadRoom({
+      turn: ({ n }) =>
+        n === 1
+          ? new Promise<string>(resolve => {
+              finishTurn = resolve
+            })
+          : '(pass)'
+    })
+
+    await room.relay.handleGroupRelayEnvelope({ id: 'restart-request', room_id: 'rm-launch', text: 'go' })
+
+    for (let i = 0; i < 400 && !finishTurn; i++) {
+      await new Promise(resolve => setImmediate(resolve))
+    }
+
+    expect(finishTurn).toBeTypeOf('function')
+    expect(replyLines(room, 'restart-request')[0]).toMatchObject({ kind: 'accepted' })
+
+    // The member session remains alive while the Desktop relay is disposed/restarted.
+    // Preserve the room store, as a reconnect with a persisted transcript would.
+    room.relay.stopGroupRelay()
+    room.relay.startGroupRelay()
+    finishTurn!('completed after relay restart')
+    await drain(() => isRunning(room))
+    await room.relay.tickGroupRelayWatchers()
+    room.relay.stopGroupRelay()
+
+    expect(
+      room.chat.$groupChats.get().Launchpad.log.some(entry => entry.text === 'completed after relay restart')
+    ).toBe(true)
+    expect(replyLines(room, 'restart-request')).toContainEqual(
+      expect.objectContaining({ kind: 'reply', text: 'completed after relay restart' })
+    )
   })
 })
