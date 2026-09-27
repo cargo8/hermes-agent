@@ -170,6 +170,15 @@ class DesktopTransport:
                         return base.EXIT_SUPERSEDED, summary
                     return base.EXIT_TIMEOUT, summary
                 elif kind == "error":
+                    if line.get("reason") in ("desktop_restarted", "delivery_unknown"):
+                        # Recovery is a failed/interrupted round, but its
+                        # committed replies and minted thread must survive in
+                        # JSON output and the caller's follow-up binding.
+                        return base.EXIT_ERROR, {
+                            "status": "error", "reason": line["reason"],
+                            "error": str(line.get("error") or "relay recovery failed"),
+                            "thread": accepted_thread, "replies": replies,
+                        }
                     raise base.GroupCLIError(
                         f"{line.get('error') or 'relay failed'}"
                         + (f" [reason: {line['reason']}]" if line.get("reason") else "")
